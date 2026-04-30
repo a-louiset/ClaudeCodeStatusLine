@@ -69,6 +69,36 @@ If PowerShell 7+ (`pwsh`) is not installed, fall back to Windows PowerShell 5.1:
 
 The status line is loaded at startup. After saving `settings.json`, tell the user to restart Claude Code (or start a new session) for the change to take effect.
 
+## Parameters
+
+Append flags to the `command` value in `settings.json`. All flags are optional.
+
+| Flag | Effect |
+|------|--------|
+| `--two_line` (Unix) / `-two_line` (Windows) | Break to a second line after the effort segment so the rate-limit segments (`5h`, `7d`, `extra`) render on the next line. |
+
+**Example — macOS / Linux**
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "~/.claude/statusline/statusline.sh --two_line"
+  }
+}
+```
+
+**Example — Windows**
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File ~/.claude/statusline/statusline.ps1 -two_line"
+  }
+}
+```
+
 ## Updating
 
 Pull the latest release:
