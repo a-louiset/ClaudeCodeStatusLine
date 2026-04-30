@@ -5,6 +5,10 @@
 set -f  # disable globbing
 VERSION="1.4.2"
 
+# Set to "true" to break to a second line after the effort segment
+# (rate-limit segments render on the next line).
+two_line=false
+
 input=$(cat)
 
 if [ -z "$input" ]; then
@@ -72,7 +76,9 @@ version_gt() {
 }
 # ===== Extract data from JSON =====
 model_name=$(echo "$input" | jq -r '.model.display_name // "Claude"')
-model_name=$(echo "$model_name" | sed 's/ *(\([0-9.]*[kKmM]*\) context)/ \1/')  # "(1M context)" → "1M"
+# Drop the "(1M context)" suffix and abbreviate the family name (Opus→Op, Sonnet→So, Haiku→Ha)
+model_name=$(echo "$model_name" | sed -E 's/ *\([0-9.]*[kKmM]* context\)//')
+model_name=$(echo "$model_name" | sed -E 's/^Opus /Op /; s/^Sonnet /So /; s/^Haiku /Ha /')
 
 # Context window
 size=$(echo "$input" | jq -r '.context_window.context_window_size // 200000')
@@ -111,6 +117,17 @@ fi
 out=""
 out+="${blue}${model_name}${reset}"
 
+# Effort badge ([L]/[M]/[H]/[X]/[MX]) immediately after the model name
+case "$effort_level" in
+    low)    out+=" ${dim}[L]${reset}" ;;
+    medium) out+=" ${orange}[M]${reset}" ;;
+    high)   out+=" ${green}[H]${reset}" ;;
+    xhigh)  out+=" ${purple}[X]${reset}" ;;
+    max)    out+=" ${red}[MX]${reset}" ;;
+    *)      _badge_letter=$(printf '%s' "${effort_level:0:1}" | tr '[:lower:]' '[:upper:]')
+            out+=" ${green}[${_badge_letter}]${reset}" ;;
+esac
+
 # Current working directory
 cwd=$(echo "$input" | jq -r '.cwd // empty')
 if [ -n "$cwd" ]; then
@@ -127,16 +144,6 @@ fi
 
 out+=" ${dim}|${reset} "
 out+="${orange}${used_tokens}/${total_tokens}${reset} ${dim}(${reset}${green}${pct_used}%${reset}${dim})${reset}"
-out+=" ${dim}|${reset} "
-out+="effort: "
-case "$effort_level" in
-    low)    out+="${dim}${effort_level}${reset}" ;;
-    medium) out+="${orange}med${reset}" ;;
-    high)   out+="${green}${effort_level}${reset}" ;;
-    xhigh)  out+="${purple}${effort_level}${reset}" ;;
-    max)    out+="${red}${effort_level}${reset}" ;;
-    *)      out+="${green}${effort_level}${reset}" ;;
-esac
 
 # ===== Cross-platform OAuth token resolution (from statusline.sh) =====
 # Tries credential sources in order: env var → macOS Keychain → Linux creds file → GNOME Keyring
@@ -309,6 +316,23 @@ iso_to_epoch() {
     return 1
 }
 
+# Format epoch seconds as "Lun@10:00" — 3-letter French weekday (Lun..Dim) + 24h time.
+# Returns empty on error.
+weekday_fr_at_hour() {
+    local epoch="$1"
+    [ -z "$epoch" ] && return
+    local dow hour day_fr
+    dow=$(date -d "@$epoch" +%u 2>/dev/null) || dow=$(date -j -r "$epoch" +%u 2>/dev/null)
+    hour=$(date -d "@$epoch" +"%H:%M" 2>/dev/null) || hour=$(date -j -r "$epoch" +"%H:%M" 2>/dev/null)
+    { [ -z "$dow" ] || [ -z "$hour" ]; } && return
+    case "$dow" in
+        1) day_fr="Lun" ;; 2) day_fr="Mar" ;; 3) day_fr="Mer" ;;
+        4) day_fr="Jeu" ;; 5) day_fr="Ven" ;; 6) day_fr="Sam" ;;
+        7) day_fr="Dim" ;; *) return ;;
+    esac
+    echo "${day_fr}@${hour}"
+}
+
 # Format ISO reset time to compact local time
 # Usage: format_reset_time <iso_string> <style: time|datetime|date>
 format_reset_time() {
@@ -333,8 +357,7 @@ format_reset_time() {
             formatted=$(date -j -r "$epoch" +"%H:%M" 2>/dev/null)
             ;;
         datetime)
-            formatted=$(date -d "@$epoch" +"%b %-d, %H:%M" 2>/dev/null) || \
-            formatted=$(date -j -r "$epoch" +"%b %-d, %H:%M" 2>/dev/null)
+            formatted=$(weekday_fr_at_hour "$epoch")
             ;;
         *)
             formatted=$(date -d "@$epoch" +"%b %-d" 2>/dev/null) || \
@@ -345,6 +368,13 @@ format_reset_time() {
 }
 
 sep=" ${dim}|${reset} "
+# When two_line is enabled, emit a newline (instead of " | ") before the first
+# rate-limit segment so 5h/7d/extra render on a second line.
+if [ "$two_line" = "true" ]; then
+    first_sep="\n"
+else
+    first_sep="$sep"
+fi
 
 # Render extra_usage segment from API usage data (not available via stdin rate_limits).
 # Appends to the global $out. No-op when data is missing or is_enabled is false.
@@ -375,7 +405,7 @@ if $effective_builtin; then
     if [ -n "$builtin_five_hour_pct" ]; then
         five_hour_pct=$(printf "%.0f" "$builtin_five_hour_pct")
         five_hour_color=$(usage_color "$five_hour_pct")
-        out+="${sep}${white}5h${reset} ${five_hour_color}${five_hour_pct}%${reset}"
+        out+="${first_sep}${white}5h${reset} ${five_hour_color}${five_hour_pct}%${reset}"
         if [ -n "$builtin_five_hour_reset" ] && [ "$builtin_five_hour_reset" != "null" ]; then
             five_hour_reset=$(date -j -r "$builtin_five_hour_reset" +"%H:%M" 2>/dev/null || date -d "@$builtin_five_hour_reset" +"%H:%M" 2>/dev/null)
             [ -n "$five_hour_reset" ] && out+=" ${dim}@${five_hour_reset}${reset}"
@@ -387,8 +417,9 @@ if $effective_builtin; then
         seven_day_color=$(usage_color "$seven_day_pct")
         out+="${sep}${white}7d${reset} ${seven_day_color}${seven_day_pct}%${reset}"
         if [ -n "$builtin_seven_day_reset" ] && [ "$builtin_seven_day_reset" != "null" ]; then
-            seven_day_reset=$(date -j -r "$builtin_seven_day_reset" +"%b %-d, %H:%M" 2>/dev/null || date -d "@$builtin_seven_day_reset" +"%b %-d, %H:%M" 2>/dev/null)
-            [ -n "$seven_day_reset" ] && out+=" ${dim}@${seven_day_reset}${reset}"
+            seven_day_reset=$(weekday_fr_at_hour "$builtin_seven_day_reset")
+            # The badge already includes "@" between weekday and hour, so don't add another
+            [ -n "$seven_day_reset" ] && out+=" ${dim}${seven_day_reset}${reset}"
         fi
     fi
 
@@ -424,7 +455,7 @@ elif [ -n "$usage_data" ] && echo "$usage_data" | jq -e '.five_hour' >/dev/null 
     five_hour_reset=$(format_reset_time "$five_hour_reset_iso" "time")
     five_hour_color=$(usage_color "$five_hour_pct")
 
-    out+="${sep}${white}5h${reset} ${five_hour_color}${five_hour_pct}%${reset}"
+    out+="${first_sep}${white}5h${reset} ${five_hour_color}${five_hour_pct}%${reset}"
     [ -n "$five_hour_reset" ] && out+=" ${dim}@${five_hour_reset}${reset}"
 
     # ---- 7-day (weekly) ----
@@ -434,12 +465,13 @@ elif [ -n "$usage_data" ] && echo "$usage_data" | jq -e '.five_hour' >/dev/null 
     seven_day_color=$(usage_color "$seven_day_pct")
 
     out+="${sep}${white}7d${reset} ${seven_day_color}${seven_day_pct}%${reset}"
-    [ -n "$seven_day_reset" ] && out+=" ${dim}@${seven_day_reset}${reset}"
+    # 7d format is "Lun@10:00" — already contains "@", so don't prepend one
+    [ -n "$seven_day_reset" ] && out+=" ${dim}${seven_day_reset}${reset}"
 
     render_extra_usage "$usage_data"
 else
     # No valid usage data — show placeholders
-    out+="${sep}${white}5h${reset} ${dim}-${reset}"
+    out+="${first_sep}${white}5h${reset} ${dim}-${reset}"
     out+="${sep}${white}7d${reset} ${dim}-${reset}"
 fi
 
@@ -476,15 +508,15 @@ if $version_needs_refresh; then
     fi
 fi
 
-update_line=""
+update_badge=""
 if [ -n "$version_data" ]; then
     latest_tag=$(echo "$version_data" | jq -r '.tag_name // empty')
     if [ -n "$latest_tag" ] && version_gt "$latest_tag" "$VERSION"; then
-        update_line="\n${dim}Update available: ${latest_tag} → Tell Claude: \"Find my installed status bar and update it\"${reset}"
+        update_badge="${orange}[U: ${latest_tag}]${reset} "
     fi
 fi
 
-# Output
-printf "%b" "$out$update_line"
+# Output — prepend the update badge so it appears at the start of line 1
+printf "%b" "${update_badge}${out}"
 
 exit 0

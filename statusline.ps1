@@ -3,6 +3,10 @@
 $VERSION = "1.4.2"
 # Single line: Model | tokens | %used | %remain | think | 5h bar @reset | 7d bar @reset | extra
 
+# Set to $true to break to a second line after the effort segment
+# (rate-limit segments render on the next line).
+$two_line = $false
+
 # Read input from stdin
 $input = @($Input) -join "`n"
 
@@ -70,7 +74,9 @@ function Test-VersionGreaterThan([string]$a, [string]$b) {
 $data = $input | ConvertFrom-Json
 
 $modelName = if ($data.model.display_name) { $data.model.display_name } else { "Claude" }
-$modelName = ($modelName -replace '\s*\((\d+\.?\d*[kKmM])\s+context\)', ' $1').Trim()  # "(1M context)" → "1M"
+# Drop the "(1M context)" suffix and abbreviate the family name (Opus→Op, Sonnet→So, Haiku→Ha)
+$modelName = ($modelName -replace '\s*\(\d+\.?\d*[kKmM]\s+context\)', '').Trim()
+$modelName = $modelName -replace '^Opus ', 'Op ' -replace '^Sonnet ', 'So ' -replace '^Haiku ', 'Ha '
 
 # Context window
 $size = if ($data.context_window.context_window_size) { [long]$data.context_window.context_window_size } else { 200000 }
@@ -116,6 +122,16 @@ if ($env:CLAUDE_CODE_EFFORT_LEVEL) {
 $out = ""
 $out += "${blue}${modelName}${reset}"
 
+# Effort badge ([L]/[M]/[H]/[X]/[MX]) immediately after the model name
+switch ($effortLevel) {
+    "low"    { $out += " ${dim}[L]${reset}" }
+    "medium" { $out += " ${orange}[M]${reset}" }
+    "high"   { $out += " ${green}[H]${reset}" }
+    "xhigh"  { $out += " ${purple}[X]${reset}" }
+    "max"    { $out += " ${red}[MX]${reset}" }
+    default  { $out += " ${green}[$($effortLevel.Substring(0,1).ToUpper())]${reset}" }
+}
+
 # Current working directory
 $cwd = $data.cwd
 if ($cwd) {
@@ -147,16 +163,6 @@ if ($cwd) {
 
 $out += " ${dim}|${reset} "
 $out += "${orange}${usedTokens}/${totalTokens}${reset} ${dim}(${reset}${green}${pctUsed}%${reset}${dim})${reset}"
-$out += " ${dim}|${reset} "
-$out += "effort: "
-switch ($effortLevel) {
-    "low"    { $out += "${dim}${effortLevel}${reset}" }
-    "medium" { $out += "${orange}med${reset}" }
-    "high"   { $out += "${green}${effortLevel}${reset}" }
-    "xhigh"  { $out += "${purple}${effortLevel}${reset}" }
-    "max"    { $out += "${red}${effortLevel}${reset}" }
-    default  { $out += "${green}${effortLevel}${reset}" }
-}
 
 # ===== OAuth token resolution =====
 function Get-OAuthToken {
@@ -278,14 +284,21 @@ if ($needsRefresh) {
     }
 }
 
+# Format a DateTime as "Lun@10:00" — 3-letter French weekday + 24h time
+function Format-WeekdayFr([DateTime]$dt) {
+    # DayOfWeek: Sunday=0..Saturday=6
+    $days = @('Dim','Lun','Mar','Mer','Jeu','Ven','Sam')
+    return "$($days[[int]$dt.DayOfWeek])@$($dt.ToString('HH:mm'))"
+}
+
 # Format ISO reset time to compact local time
 function Format-ResetTime([string]$isoStr, [string]$style) {
     if (-not $isoStr -or $isoStr -eq "null") { return $null }
     try {
         $dt = [DateTimeOffset]::Parse($isoStr).LocalDateTime
         switch ($style) {
-            "time"     { return $dt.ToString("h:mmtt").ToLower() }
-            "datetime" { return $dt.ToString("MMM d, h:mmtt").ToLower() }
+            "time"     { return $dt.ToString("HH:mm") }
+            "datetime" { return Format-WeekdayFr $dt }
             default    { return $dt.ToString("MMM d").ToLower() }
         }
     } catch { return $null }
@@ -297,14 +310,17 @@ function Format-EpochResetTime([object]$epoch, [string]$style) {
     try {
         $dt = [DateTimeOffset]::FromUnixTimeSeconds([long]$epoch).LocalDateTime
         switch ($style) {
-            "time"     { return $dt.ToString("h:mmtt").ToLower() }
-            "datetime" { return $dt.ToString("MMM d, h:mmtt").ToLower() }
+            "time"     { return $dt.ToString("HH:mm") }
+            "datetime" { return Format-WeekdayFr $dt }
             default    { return $dt.ToString("MMM d").ToLower() }
         }
     } catch { return $null }
 }
 
 $sep = " ${dim}|${reset} "
+# When $two_line is enabled, emit a newline (instead of " | ") before the first
+# rate-limit segment so 5h/7d/extra render on a second line.
+$first_sep = if ($two_line) { "`n" } else { $sep }
 
 # Render extra_usage segment from API usage data (not available via stdin rate_limits).
 # Returns the segment string (may be empty). No-op when data is missing or is_enabled is false.
@@ -345,7 +361,7 @@ if ($effectiveBuiltin) {
     if ($null -ne $builtinFiveHourPct) {
         $fiveHourPct = [math]::Floor([double]$builtinFiveHourPct)
         $fiveHourColor = Get-UsageColor $fiveHourPct
-        $out += "${sep}${white}5h${reset} ${fiveHourColor}${fiveHourPct}%${reset}"
+        $out += "${first_sep}${white}5h${reset} ${fiveHourColor}${fiveHourPct}%${reset}"
         $fiveHourReset = Format-EpochResetTime $builtinFiveHourReset "time"
         if ($fiveHourReset) { $out += " ${dim}@${fiveHourReset}${reset}" }
     }
@@ -355,7 +371,8 @@ if ($effectiveBuiltin) {
         $sevenDayColor = Get-UsageColor $sevenDayPct
         $out += "${sep}${white}7d${reset} ${sevenDayColor}${sevenDayPct}%${reset}"
         $sevenDayReset = Format-EpochResetTime $builtinSevenDayReset "datetime"
-        if ($sevenDayReset) { $out += " ${dim}@${sevenDayReset}${reset}" }
+        # 7d format is "Lun@10:00" — already contains "@", so don't prepend one
+        if ($sevenDayReset) { $out += " ${dim}${sevenDayReset}${reset}" }
     }
 
     # Render extra_usage from API cache (stdin rate_limits doesn't expose it)
@@ -397,7 +414,7 @@ if ($effectiveBuiltin) {
         $fiveHourReset = Format-ResetTime $fiveHourResetIso "time"
         $fiveHourColor = Get-UsageColor $fiveHourPct
 
-        $out += "${sep}${white}5h${reset} ${fiveHourColor}${fiveHourPct}%${reset}"
+        $out += "${first_sep}${white}5h${reset} ${fiveHourColor}${fiveHourPct}%${reset}"
         if ($fiveHourReset) { $out += " ${dim}@${fiveHourReset}${reset}" }
 
         # ---- 7-day (weekly) ----
@@ -407,7 +424,8 @@ if ($effectiveBuiltin) {
         $sevenDayColor = Get-UsageColor $sevenDayPct
 
         $out += "${sep}${white}7d${reset} ${sevenDayColor}${sevenDayPct}%${reset}"
-        if ($sevenDayReset) { $out += " ${dim}@${sevenDayReset}${reset}" }
+        # 7d format is "Lun@10:00" — already contains "@", so don't prepend one
+        if ($sevenDayReset) { $out += " ${dim}${sevenDayReset}${reset}" }
 
         $out += Format-ExtraUsage $parsedUsage
     } catch {}
@@ -451,18 +469,18 @@ if ($versionNeedsRefresh) {
     }
 }
 
-$updateLine = ""
+$updateBadge = ""
 if ($versionData) {
     try {
         $vcParsed = if ($versionData -is [string]) { $versionData | ConvertFrom-Json } else { $versionData }
         $latestTag = $vcParsed.tag_name
         if ($latestTag -and (Test-VersionGreaterThan $latestTag $VERSION)) {
-            $updateLine = "`n${dim}Update available: ${latestTag} → Tell Claude: `"Find my installed status bar and update it`"${reset}"
+            $updateBadge = "${orange}[U: ${latestTag}]${reset} "
         }
     } catch {}
 }
 
-# Output
-Write-Host -NoNewline "$out$updateLine"
+# Output — prepend the update badge so it appears at the start of line 1
+Write-Host -NoNewline "${updateBadge}${out}"
 
 exit 0
