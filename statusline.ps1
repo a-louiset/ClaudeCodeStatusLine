@@ -1,11 +1,14 @@
 # Source: https://github.com/daniel3303/ClaudeCodeStatusLine
 
+# When -two_line is passed, break to a second line after the effort segment so
+# rate-limit segments render on the next line. Default off; enable by setting
+# "command": "... statusline.ps1 -two_line" in settings.json.
+param(
+    [switch]$two_line
+)
+
 $VERSION = "1.4.2"
 # Single line: Model | tokens | %used | %remain | think | 5h bar @reset | 7d bar @reset | extra
-
-# Set to $true to break to a second line after the effort segment
-# (rate-limit segments render on the next line).
-$two_line = $false
 
 # Read input from stdin
 $input = @($Input) -join "`n"

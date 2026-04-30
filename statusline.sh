@@ -5,9 +5,15 @@
 set -f  # disable globbing
 VERSION="1.4.2"
 
-# Set to "true" to break to a second line after the effort segment
-# (rate-limit segments render on the next line).
+# When true, break to a second line after the effort segment so rate-limit
+# segments render on the next line. Default off; enable by passing --two_line
+# (e.g. set "command": ".../statusline.sh --two_line" in settings.json).
 two_line=false
+for arg in "$@"; do
+    case "$arg" in
+        --two_line) two_line=true ;;
+    esac
+done
 
 input=$(cat)
 
